@@ -139,3 +139,5 @@ measure_file
 all_indexed %>% 
   anti_join(measure_file)
 
+all_indexed %>% 
+  write_delim("output/service_reports_h3_level8_indexed.csv", delim = "|")

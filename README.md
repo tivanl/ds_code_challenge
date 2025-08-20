@@ -1,5 +1,5 @@
 
-<img src="img/city_emblem.png" alt="City Logo"/>
+<img src="img/jpal_city.jpg" alt="J-PAL & City Logos"/>
 
 # City of Cape Town - Data Engineer Code Challenge
 
