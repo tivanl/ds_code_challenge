@@ -4,8 +4,11 @@ library(sf)
 library(logger)
 library(tictoc)
 library(glue)
+library(furrr)
+library(parallel)
 library(tidyverse)
 source("scripts/download_cpt_s3_data.R")
+source("scripts/st_join_contains.R")
 
 # retrieve the file if it doesn't exist yet -------------------------------
 
@@ -42,7 +45,6 @@ geo_sr_12m <- service_requests_12m %>%
 # read in the polygons
 city_hex_8 <- st_read("data/city-hex-polygons-8.geojson")
 
-# ________________________OPTIMISE & PARALLELISE________________________
 tic("Time consumed in conversion and spatial join")
 # convert the lat & long points into a geometry to make a sf object of the data
 geom_point_values <- map2(
@@ -57,25 +59,39 @@ sf_sr_12m <- geo_sr_12m %>%
   # it is important to check the CRS of the hex to ensure they match
   st_sf(geometry = geom_point_values, crs = 4326)
 
-# read in the hex data for the city
-
-# this join results in 731,019 rows, the sr data has 941,634 rows
-hex_point_sr_join <- st_join(
-  x = city_hex_8,
-  y = sf_sr_12m,
-  join = st_contains
-)
-toc()
-
-# keep only the necessary data
-geo_sr_12m_indexed <- hex_point_sr_join %>%
-  st_drop_geometry() %>% 
-  as_tibble() %>% 
-  select(
-    h3_level8_index = index,
-    notification_number
+# iterating over 10 smaller dataframes is more memory efficient than performing 
+# the join over the entire points dataframe. On my machine it is also faster,
+# it is also faster than implementing it in parallel (but only because I am 
+# limited to 8GB of memory). I implemented a parallel version over 5 instances
+# but the excessive memory usage made it perform slower than the sequential.
+# cl <- makePSOCKcluster(5)  # for parallel
+# plan(cluster, workers = cl)  # for parallel
+geo_sr_12m_indexed <- sf_sr_12m %>% 
+  # create an index to loop over
+  mutate(
+    row_num = 1:n(),
+    row_num = row_num %% 10
   ) %>% 
-  filter(!is.na(notification_number))
+  # split the dataframe into segments according to the index
+  group_nest(row_num, .key = "points_df") %>% 
+  # Add the polygons as a column in the dataframe (assists with using pmap). 
+  # This will not be memory intensive, all elements of the list will merely
+  # be pointers to the same dataframe containing the polygons
+  mutate(
+    polygons_df = list(city_hex_8)
+  ) %>% 
+  # now that the data segments have been create, drop the index
+  select(-row_num) %>% 
+  # iterate over the segments and bind the rows of the resulting sf dataframes.
+  # Note that the st_join_contains function is defined in a separate file & 
+  # sourced at the start of the script (scripts/st_join_contains.R)
+  # future_pmap_dfr(st_join_contains)  # for parallel
+  pmap_dfr(st_join_contains)
+
+# stopCluster(cl)  # for parallel
+
+# display the time taken for the operation
+toc()
 
 # There are 3 data points that don't comply with the geo join, what should the threshold be? 
 failed_records <- geo_sr_12m %>% 
@@ -84,8 +100,11 @@ failed_records <- geo_sr_12m %>%
 # save a file to check which records couldn't match
 saveRDS(failed_records, "output/failed_geo_join_records.rds")
 
-# log an error if the 20 record threshold is violated
-if(length(failed_records) > 20){
+# If more than 0.1% of rows failed to join, throw an error and explain where the 
+# failed records can be found.
+# The 0.1% threshold was chosen to ensure a low threshold for detecting 
+# systematic issues (not mere anomalies)
+if(nrow(failed_records)/nrow(geo_sr_12m) > 0.001){
   log_error(
     glue(
       "THERE WERE {nrow(failed_records)} RECORDS THAT COULD NOT BE JOINED BASED ON COORDINATES
@@ -115,7 +134,8 @@ measure_file <- read_csv("data/sr_hex.csv")
 # display a snippet of the data
 measure_file
 
-# only the three records that could not be joined, do not match
+# only the three records that could not be spatially joined, do not match 
+# (their indexes differ from the validation data)
 all_indexed %>% 
   anti_join(measure_file)
 
