@@ -35,13 +35,14 @@ query <- "SELECT s.* FROM s3object[*].features[*] s WHERE s.properties.resolutio
 
 # start timer for data retrieval operation
 tic("Retrieving the data took")
-
+# use the select object content operation to retrieve the data from the file
 hex_8_stream <- s3$select_object_content(
   Bucket = bucket_name,
   Key = file_name,
   Expression = query,
   ExpressionType = "SQL",
   InputSerialization = list(
+    # geojsons are jsons so we can use the json format
     JSON = list(Type = "DOCUMENT"),
     CompressionType = "NONE"
   ),
@@ -50,8 +51,11 @@ hex_8_stream <- s3$select_object_content(
   )
 )
 
+# AWS S3 Select streams the response (because the size of the request is 
+# unknown). The code below retrieves all the chunks from the response
 hex_8_events <- hex_8_stream$Payload(
   function(x) {
+    
     if (!is.null(x$Records)){
       output <- x$Records$Payload
       
@@ -61,18 +65,28 @@ hex_8_events <- hex_8_stream$Payload(
   }
 )
 
+# Define a function that can be used to loop over the events to extract text 
+# from the raw response
+extract_from_payload <- function(raw){
+  
+  if(is.raw(raw$Records$Payload)){
+    return_char <- rawToChar(raw$Records$Payload)
+  } else{
+    return_char <- ""
+  }
+  
+  return(return_char)
+  
+}
+
 # extract all of the valid raw data that was streamed
 map_chr(
   hex_8_events,
-  ~{
-    if(is.raw(.x$Records$Payload)){
-      rawToChar(.x$Records$Payload)
-    } else{
-      ""
-    }
-  }
+  extract_from_payload
 ) %>% 
+  # collapse into a single string
   str_c(collapse = "") %>% 
+  # remove trailing white space
   str_trim() %>% 
   # save the cleaned data in the appropriate file location
   writeLines(text = ., con = "data/city_hex_polygons_8_10_filter_8.geojson")

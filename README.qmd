@@ -11,6 +11,8 @@ format:
     toc-title: Contents
     toc-location: left
     css: ["docs/styles.css"]
+  gfm: 
+    output-file: README.md
 number-sections: true
 editor: source
 editor_options: 
@@ -23,6 +25,11 @@ execute:
   cache: false
 code-block-bg: true
 ---
+
+<div align="center">
+<img src="img/jpal_logo.png" alt="J-PAL logo" width="200"/>
+<img src="img/city_emblem.png" alt="City emblem" width="200"/>
+</div>
 
 # Introduction {#sec-intro}
 
@@ -83,6 +90,98 @@ Besides the packages read in above, I also define custom function which can be f
 
 ## Data extraction {#sec-extraction}
 
+The code below sets up a client for the S3 service. Note that the following environment variables have to be set before running the code: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`. The `s3` client's operations can be called using syntax like `s3$operation()`. 
+
+```{r}
+# set up the s3 connection (the credentials should be saved in  .Renviron)
+s3 <- paws::s3(
+  config = list(
+    credentials = list(
+      creds = list(
+        access_key_id = Sys.getenv("AWS_ACCESS_KEY_ID"),
+        secret_access_key = Sys.getenv("AWS_SECRET_ACCESS_KEY")
+      )
+    ),
+    region = Sys.getenv("AWS_REGION")
+  )
+)
+```
+
+```{r}
+# specify the file information for extraction 
+bucket_name <- "cct-ds-code-challenge-input-data"
+file_name <- "city-hex-polygons-8-10.geojson"
+# specify the query to use for selecting only resolution 8 polygons
+query <- "SELECT s.* FROM s3object[*].features[*] s WHERE s.properties.resolution = 8"
+
+# start timer for data retrieval operation
+tic("Retrieving the data took")
+# use the select object content operation to retrieve the data from the file
+hex_8_stream <- s3$select_object_content(
+  Bucket = bucket_name,
+  Key = file_name,
+  Expression = query,
+  ExpressionType = "SQL",
+  InputSerialization = list(
+    # geojsons are jsons so we can use the json format
+    JSON = list(Type = "DOCUMENT"),
+    CompressionType = "NONE"
+  ),
+  OutputSerialization = list(
+    JSON = list(RecordDelimiter = "\n")
+  )
+)
+
+# AWS S3 Select streams the response (because the size of the request is 
+# unknown). The code below retrieves all the chunks from the response
+hex_8_events <- hex_8_stream$Payload(
+  function(x) {
+    
+    if (!is.null(x$Records)){
+      output <- x$Records$Payload
+      
+      return(x)
+      
+    }
+  }
+)
+
+# Define a function that can be used to loop over the events to extract text 
+# from the raw response
+extract_from_payload <- function(raw){
+  
+  if(is.raw(raw$Records$Payload)){
+    return_char <- rawToChar(raw$Records$Payload)
+  } else{
+    return_char <- ""
+  }
+  
+  return(return_char)
+  
+}
+
+# extract all of the valid raw data that was streamed
+map_chr(
+  hex_8_events,
+  extract_from_payload
+) %>% 
+  # collapse into a single string
+  str_c(collapse = "") %>% 
+  # remove trailing white space
+  str_trim() %>% 
+  # save the cleaned data in the appropriate file location
+  writeLines(text = ., con = "data/city_hex_polygons_8_10_filter_8.geojson")
+
+# end timer for the operation
+toc()
+```
+
+
 ## Initial Data Transformation {#sec-initial}
 
 ## Further Data Transformation {#sec-further}
+
+
+### Data anonymisation
+
+There is an inherent trade off in securing data. Data that is completely useful is also completely insecure while data that is completely secure is completely useless. As an example, the most secure way to avoid data being used for something unwanted, might be to destroy all instances of the data, but that also means that nothing else can be done with the data. To balance usefulness and security, we want to get rid of the portions of the data that allow the end-user to be identified whilst maintaining as much useful information in the process. The `notification_number` is useful as the unique identifier (it might be useful if we need to link back to original data). To make it more secure, we use a hashing algorithm to pseudonymise it. I also added a prefix and suffix, and squared the number to make it more difficult to look it up via hash tables. As requested, the `creation_timestamp` is converted to 6-hour frequency (`creation_timestamp_6h`) and the location to 500m frequency (captured in the `geometry` column). The `completion_timestamp` is useful for determining the duration of the service issues, I calculate the duration of the issue in hours, keep the duration (`duration_to_completion_hours`) and drop the `completion_timestamp`. The wind direction and speed can be reverse engineered to determine the `creation_timestamp` to an hourly frequency, which defeats the purpose of the 6-hour frequency transformation. I therefore convert the wind data to hourly frequency and calculate the average direction (`wind_dir_deg`) and speed (`wind_speed_m_sec`) of the wind for each 6-hour interval before joining it to the service report data. I leave out the `reference_number` because it is not useful for analysis. I thought about iterating over the category variables (`directorate`, `department`, `branch`, `section`, `code_group`, `code`, `cause_code`) and change the value to `“Other”` in instances where there was only one occurrence of a value in the category but this felt like overkill. 
