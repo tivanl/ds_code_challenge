@@ -40,51 +40,51 @@ The purpose of this document is to walk through the my solutions to the [Code Ch
 The packages below need to be installed to enable the code in the scripts. There are some functions that use `system()` to make calls directly to the operating system. The code was written using Linux. 
 
 ```{r}
-# # a vector containing the names of all the packages used in the document
-# pkg <- c(
-#   "paws", 
-#   "httr2", 
-#   "tictoc", 
-#   "logger", 
-#   "glue",
-#   "sf", 
-#   "jsonlite", 
-#   "tmap", 
-#   "furrr", 
-#   "parallel",
-#   "janitor", 
-#   "osrm", 
-#   "readODS", 
-#   "tidyverse"
-# )
-# # vector indicating whether the packages in pkg are installed
-# filter_vec <- !pkg %in% installed.packages()[,"Package"]
-# # install those that have not been installed
-# if(sum(filter_vec) > 0) walk(pkg[filter_vec], ~install.packages(.x, Ncpus = 5))
-# 
-# library(paws)
-# library(httr2)
-# library(tictoc)
-# library(logger)
-# library(glue)
-# library(sf)
-# library(jsonlite)
-# library(tmap)
-# library(furrr)
-# library(parallel)
-# library(janitor)
-# library(glue)
-# library(osrm)
-# library(readODS)
-# library(tidyverse)
+# a vector containing the names of all the packages used in the document
+pkg <- c(
+  "paws",
+  "httr2",
+  "tictoc",
+  "logger",
+  "glue",
+  "sf",
+  "jsonlite",
+  "tmap",
+  "furrr",
+  "parallel",
+  "janitor",
+  "osrm",
+  "readODS",
+  "tidyverse"
+)
+# vector indicating whether the packages in pkg are installed
+filter_vec <- !pkg %in% installed.packages()[,"Package"]
+# install those that have not been installed
+if(sum(filter_vec) > 0) walk(pkg[filter_vec], ~install.packages(.x, Ncpus = 5))
+
+library(paws)
+library(httr2)
+library(tictoc)
+library(logger)
+library(glue)
+library(sf)
+library(jsonlite)
+library(tmap)
+library(furrr)
+library(parallel)
+library(janitor)
+library(glue)
+library(osrm)
+library(readODS)
+library(tidyverse)
 ```
 
 Besides the packages read in above, I also define custom function which can be found in `scripts/helpers`. I source them in the code chunk below.
 
 ```{r}
-# source("scripts/helpers/download_cpt_s3_data.R")
-# source("scripts/helpers/st_join_contains.R")
-# source("scripts/helpers/load_cpt_suburbs.R")
+source("scripts/helpers/download_cpt_s3_data.R")
+source("scripts/helpers/st_join_contains.R")
+source("scripts/helpers/load_cpt_suburbs.R")
 ```
 
 
@@ -107,6 +107,8 @@ s3 <- paws::s3(
 )
 ```
 
+The code below uses AWS S3 Select to retrieve only resolution 8 polygons from `city_hex_polygons_8_10_filter_8.geojson`. 
+
 ```{r}
 # specify the file information for extraction 
 bucket_name <- "cct-ds-code-challenge-input-data"
@@ -115,7 +117,7 @@ file_name <- "city-hex-polygons-8-10.geojson"
 query <- "SELECT s.* FROM s3object[*].features[*] s WHERE s.properties.resolution = 8"
 
 # start timer for data retrieval operation
-tic("Retrieving the data took")
+tic("Retrieving resolution 8 data from city_hex_polygons_8_10_filter_8.geojson took")
 # use the select object content operation to retrieve the data from the file
 hex_8_stream <- s3$select_object_content(
   Bucket = bucket_name,
@@ -176,8 +178,67 @@ map_chr(
 toc()
 ```
 
+The code below validates that the polygons retrieved using S3 Select match the data in `city_hex_polygons_8_10_filter_8.geojson`. 
+
+```{r}
+# read selected data in
+cpt_hex_filtered_8 <- st_read("data/city_hex_polygons_8_10_filter_8.geojson")
+
+# ensure the file to validate against is downloaded
+tic("Time taken to download file (or check if already downloaded)")
+hex_polygons_8_location <- "https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/city-hex-polygons-8.geojson" 
+download_cpt_s3_data(hex_polygons_8_location)
+toc()
+
+# read the file in against which to validate
+city_polygons_8 <- st_read("data/city-hex-polygons-8.geojson")
+
+# validate that the two files are similar ---------------------------------
+
+tic("Validation of city-hex-polygons-8-10 (res 8) against city-hex-polygons-8")
+# get the number of rows in the larger file that are not contained in the smaller
+# file
+rows_8to10_not_in_8 <- cpt_hex_filtered_8 %>% 
+  filter(resolution == 8) %>% 
+  filter(!index %in% city_polygons_8$index) %>% 
+  nrow()
+
+# get the number of rows in the smaller file that are not contained in the larger
+# file
+rows_8_not_in_8to10 <- city_polygons_8 %>% 
+  filter(!index %in% cpt_hex_filtered_8$index) %>% 
+  nrow()
+
+if(rows_8_not_in_8to10 == 0 & rows_8to10_not_in_8 == 0){
+  log_info(
+    "Exact match between city-hex-polygons-8 & city-hex-polygons-8-10 (res 8)"
+  )
+} else{
+  log_info(
+    glue("city-hex-polygons-8-10 (res 8) has {rows_8to10_not_in_8} rows that don't match city-hex-polygons-8")
+  )
+  log_info(
+    glue("city-hex-polygons-8 has {rows_8_not_in_8to10} rows that don't match city-hex-polygons-8-10 (res 8)")
+  )
+}
+
+# report the time consumed by the operation
+toc()
+```
 
 ## Initial Data Transformation {#sec-initial}
+
+This section deals with the initial transformation of the service request data. The code chunk below uses a custom defined function (`download_cpt_s3_data`) which is sourced at the top of the document. It checks whether the relevant file exists locally and download it in case it does not exist. 
+
+```{r}
+# execute the download_cpt_s3_data function to retrieve the file if it doesn't 
+# exist & provide the path if it does exist
+tic("Time taken to retrieve sr_hex")
+download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr_hex.csv.gz")
+download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr.csv.gz")
+toc()
+
+```
 
 ## Further Data Transformation {#sec-further}
 
