@@ -1,6 +1,6 @@
 ### GENERAL ###
-data/
-output/
+data/*
+output/*
 *.csv
 *.xlsx
 
@@ -47,7 +47,7 @@ vignettes/*.pdf
 .Renviron
 
 # pkgdown site
-docs/
+docs/*
 
 # translation temp files
 po/*~

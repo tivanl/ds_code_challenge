@@ -198,7 +198,8 @@ sr_bellville_wind <- sr_bellville_centroid_1m %>%
   # the frequencies align, we join on them below
   left_join(bellville_wind_df, by = join_by("creation_hour" == "date_time")) 
 
-# 3. anonymise the data
+
+# 3. anonymise the data ---------------------------------------------------
 anonymised_bellville_data <- sr_bellville_wind %>% 
   select(
    notification_number,
@@ -276,8 +277,12 @@ anonymised_bellville_data
 
 # Visualise the data
 anonymised_bellville_data %>% 
+  mutate(
+    directorate = gsub("COMMUNITY SERVICES AND HEALTH", "COMM SERV & HEALTH", directorate),
+    directorate = gsub("MANAGEMENT", "MAN", directorate)
+  ) %>% 
   ggplot(
-    aes(x = department, col = department, y = duration_to_completion_hours)
+    aes(x = directorate, col = directorate, y = duration_to_completion_hours)
   ) +
   geom_jitter(alpha = 0.3) +
   geom_boxplot(alpha = 0.6) +
@@ -286,7 +291,7 @@ anonymised_bellville_data %>%
   theme_bw() +
   theme(legend.position = "none") +
   labs(
-    title = "Time taken to complete service requests",
+    title = "Hours taken to complete service requests per directorate",
     x = "",
     y = ""
   )

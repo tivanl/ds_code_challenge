@@ -3,16 +3,7 @@ title: "J-PAL & CCT Data Engineer Code Challenge"
 author: "Tivan"
 date: "2025-08-20"
 format: 
-  html:
-    self-contained: true
-    toc: true
-    toc_float: true
-    toc-depth: 2
-    toc-title: Contents
-    toc-location: left
-    css: ["docs/styles.css"]
-  gfm: 
-    output-file: README.md
+  gfm: default
 number-sections: true
 editor: source
 editor_options: 
@@ -33,17 +24,17 @@ code-block-bg: true
 
 # Introduction {#sec-intro}
 
-The purpose of this document is to walk through the my solutions to the [Code Challenge](https://github.com/cityofcapetown/ds_code_challenge/tree/j-pal-data-engineer) for the Data Engineer position at J-PAL Africa. The solutions are divided into three sections, each with a corresponding script. @sec-extraction corresponds to `1_s3_select.R` which retrieves data from AWS, @sec-initial corresponds to `2_initial_data_transformation.R` which combines uses spatial joins to combine two datasets, and @sec-further corresponds to `3_further_data_transformation.R` which applies spatial filtering, adds additional data to enrich the dataset, and retrieves additional data where necessary. All scripts should be able to run independently from one another (except that where a file was downloaded in one, it will be available to the next which will skip retrieval if the file is detected).
+The purpose of this document is to walk through my solutions to the [Code Challenge](https://github.com/cityofcapetown/ds_code_challenge/tree/j-pal-data-engineer) for the Data Engineer position at J-PAL Africa. The solutions are divided into three sections, each with a corresponding script. @sec-extraction corresponds to `1_s3_select.R` which retrieves data from AWS, @sec-initial corresponds to `2_initial_data_transformation.R` which uses spatial joins to combine two datasets, and @sec-further corresponds to `3_further_data_transformation.R` which applies spatial filtering, adds additional data to enrich the dataset, and anonymises data where necessary. All scripts should be able to run independently from one another (where a file was downloaded in one, it will be available to the next which will skip retrieval if the file is detected locally).
 
-> It is recommended to use the `setwd()` function to the directory that was cloned from Github (`ds_code_challenge`) at the start of every script __or__ to open RStudio by double clicking on the `.Rproj` file. 
+> I recommend using the `setwd()` function to set the directory that was cloned from Github (`ds_code_challenge`) as the working directory at the start of every script __or__ to open RStudio by double clicking on the `.Rproj` file (which will automatically set it as your working directory. Retrieve the repository by running `git clone https://github.com/tivanl/ds_code_challenge.git`.
 
 # Challenge Solutions
 
-The packages below need to be installed to enable the code in the scripts. There are some functions that use `system()` to make calls directly to the operating system. The code was written using Linux. 
+The packages below need to be installed to enable the code in the scripts to run. There are some functions that use `system()` to make calls directly to the operating system. __The code was written using Linux (Ubuntu 22.04) and is not compatible with Windows__. 
 
 ```{r}
 # a vector containing the names of all the packages used in the document
-pkg <- c(
+req_pkg <- c(
   "paws",
   "httr2",
   "tictoc",
@@ -63,8 +54,8 @@ pkg <- c(
   "lwgeom",
   "tidyverse"
 )
-# vector indicating whether the packages in pkg are installed
-filter_vec <- !pkg %in% installed.packages()[,"Package"]
+# vector indicating whether the packages in req_pkg are installed
+filter_vec <- !req_pkg %in% installed.packages()[,"Package"]
 # install those that have not been installed
 if(sum(filter_vec) > 0) walk(pkg[filter_vec], ~install.packages(.x, Ncpus = 5))
 
@@ -88,7 +79,7 @@ library(lwgeom)
 library(tidyverse)
 ```
 
-Besides the packages read in above, I also define custom function which can be found in `scripts/helpers`. I source them in the code chunk below.
+Besides the packages read in above, I also define custom function which can be found in `scripts/helpers`. I source them in the code chunk below and they can be found in @sec-appendix.
 
 ```{r}
 source("scripts/helpers/download_cpt_s3_data.R")
@@ -97,10 +88,9 @@ source("scripts/helpers/load_cpt_suburbs.R")
 source("scripts/helpers/download_file.R")
 ```
 
-
 ## Data extraction {#sec-extraction}
 
-The code below sets up a client for the S3 service. Note that the following environment variables have to be set before running the code: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`. The `s3` client's operations can be called using syntax like `s3$operation()`. 
+The code below sets up a client for AWS S3 service. Note that the following environment variables have to be set before running the code: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`. The `s3` client's operations can be called using syntax like `s3$operation()`. 
 
 ```{r}
 # set up the s3 connection (the credentials should be saved in  .Renviron)
@@ -195,7 +185,7 @@ The code below validates that the polygons retrieved using S3 Select match the d
 cpt_hex_filtered_8 <- st_read("data/city_hex_polygons_8_10_filter_8.geojson")
 
 # ensure the file to validate against is downloaded
-tic("Time taken to download file (or check if already downloaded)")
+tic("Time taken to download data/city-hex-polygons-8.geojson (or check if already downloaded)")
 hex_polygons_8_location <- "https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/city-hex-polygons-8.geojson" 
 #  the download_cpt_s3_data function is sourced at the start of the document 
 download_cpt_s3_data(hex_polygons_8_location)
@@ -242,7 +232,7 @@ cpt_hex_filtered_8
 
 ## Initial Data Transformation {#sec-initial}
 
-This section deals with the initial transformation of the service request data. The code chunk below uses a custom defined function (`download_cpt_s3_data`) which is sourced at the top of the document. It checks whether the relevant file exists locally and download it in case it does not exist. 
+This section deals with the initial transformation of the service request data. The code chunk below uses a custom defined function (`download_cpt_s3_data`) which is sourced at the top of the document. It checks whether the relevant file exists locally and downloads it in case it does not exist. 
 
 ```{r}
 # execute the download_cpt_s3_data function to retrieve the file if it doesn't 
@@ -253,7 +243,7 @@ download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.ama
 toc()
 ```
 
-Once the required data is downloaded, we can read it in and prepare it for the join. Combining the data will require performing a spatial join. The code chunk below splits the data into two data frames. `missing_geo_sr_12m`, contains the unique identifier (`notification_number`) and a column called `h3_level8_index` with all of its values set to zero (as instructed). `notification_number` is used later on to join the indexed data back to `service_requests_12m`. `geo_sr_12m` contains all of the rows that have sufficient geolocation information. 
+Once the required data is downloaded, we can read it in and prepare it for the join. Combining the data will require performing a spatial join. The code chunk below splits the data into two data frames. `missing_geo_sr_12m` (missing latitude or longitude), contains the unique identifier (`notification_number`) and a column called `h3_level8_index` with all of its values set to zero (as instructed). `notification_number` is used later on to join the indexed data back to `service_requests_12m`. `geo_sr_12m` contains all of the rows that have sufficient geolocation information. 
 
 ```{r}
 # read in the service request data with the H3 hex indexes for the past 12 
@@ -277,9 +267,10 @@ geo_sr_12m <- service_requests_12m %>%
   # filter out rows with missing geolocation
   filter(!is.na(latitude) & !is.na(longitude))
 
+missing_geo_sr_12m
 ```
 
-The code chunk below, transforms `geo_sr_12m` to a simple feature collection and them performs a spatial join to retrieve the indexes of the H3 polygons at resolution 8. `goe_sr_12m` has `r nrow(geo_sr_12m)`. I am working on a machine that has only 8GB of RAM, which means I have to opt for memory efficiency rather than speed. It is possible to implement the join in parallel which should reduce the computation time (on my machine it actually takes longer). You can uncomment the relevant lines and comment out the relevent ones to run the process in parallel. 
+The code chunk below, transforms `geo_sr_12m` to a simple feature collection and then performs a spatial join to retrieve the indexes of the H3 polygons at resolution 8. `geo_sr_12m` has `r nrow(geo_sr_12m)` rows. I am working on a machine with only 8GB of RAM, which means I have to opt for memory efficiency rather than speed. It is possible to implement the join in parallel which should reduce the computation time (on my machine it actually takes longer). You can uncomment the relevant lines and comment out the relevant ones to run the process in parallel. 
 
 ```{r}
 # read in the polygons
@@ -336,15 +327,14 @@ geo_sr_12m_indexed <- sf_sr_12m %>%
 # display the time taken for the operation
 toc()
 
+# show that the indexes have been matched
+geo_sr_12m_indexed %>% 
+  glimpse()
 ```
 
 The code chunk below checks the joined records against the original data to see if there were records that failed to join.
 
 ```{r}
-
-# show that the indexes have been matched
-geo_sr_12m_indexed
-
 # There are 3 data points that don't comply with the geo join, what should the threshold be? 
 failed_records <- geo_sr_12m %>% 
   filter(!notification_number %in% geo_sr_12m_indexed$notification_number)
@@ -410,10 +400,11 @@ outside_cpt_h3 <- sf_sr_12m %>%
   select(
     notification_number, h3_level8_index
   )
-  
+
+outside_cpt_h3
 ```
 
-After a successful join and obtaining values for the points outside of the original city polygon bounds, we can combine everything into a single index lookup dataframe. The index values are added to the original 12 month service request data to enable validation.
+After a successful join and obtaining values for the points outside of the original city polygon bounds, we can combine everything into a single index lookup dataframe (`complete_indexed`). The index values are joined to the original 12 month service request data to enable validation (`all_indexed`).
 
 ```{r}
 # combine records without coordinates and those with matched
@@ -427,10 +418,11 @@ complete_indexed <- bind_rows(
 all_indexed <- service_requests_12m %>% 
   left_join(complete_indexed)
 # display a snippet of the data
-all_indexed
+all_indexed %>% 
+  glimpse()
 ```
 
-The final step in this section is validation. The chunk below compares the joined indexes data with the `sr_hex.csv` file that was provided. An `anti_join` across all variables, indicates a perfect match by returning an empty dataframe. 
+The final step in this section is validation. The chunk below compares the joined indexes data (`all_indexed`) with the `sr_hex.csv` file that was provided. An `anti_join` across all variables, indicates a perfect match by returning an empty dataframe. 
 
 ```{r}
 # check against original file to see if they match
@@ -445,7 +437,7 @@ all_indexed %>%
   anti_join(measure_file)
 ```
 
-The resulting data can be used to visualise the spatial distribution of service reports and the most prevalent directorate reported to per area. 
+`all_indexed` can be used to visualise the spatial distribution of service reports and the most prevalent directorate reported to per area. 
 
 ```{r}
 #| fig-width: 8
@@ -483,24 +475,28 @@ map_data <- all_indexed %>%
 map_directorate <-
   map_data %>% 
   tm_shape() +
-  tm_fill("directorate") +
+  tm_fill(
+    "directorate",
+      title = "Directorate"
+  ) +
   tm_title("Most prevalent directorate") +
   tm_layout(
     legend.position = c("right", "top"),
     legend.text.size = 0.5
-  ) 
+  )  
 
 map_prevalence <- map_data %>% 
   tm_shape() +
   tm_fill(
     "total_sr_poly",
-    breaks = c(0, 20, 100, 500, 2000, 4000)
+    breaks = c(0, 20, 100, 500, 2000, 4000),
+    title = "Requests Count"
   ) +
   tm_title("Distribution of service reports") +
   tm_layout(
     legend.position = c("right", "top"),
     legend.text.size = 0.5
-  )
+  ) 
 
 tmap_arrange(map_directorate, map_prevalence, ncol = 2)
 ```
@@ -511,7 +507,7 @@ This section deals with geospatial manipulation, joining datasets by temporal va
 
 ### Bellville subsample
 
-In this section, a subsample of the service request are obtained by filtering out the requests that are not withing 1 min of the Bellville South official suburb. This is done by using a shape file containing the offical suburbs of the City of Cape Town. The Bellville South polygon is used to obtain its centroid, following which the Open Street Maps API is used to obtain a polygon that represents the area which is 1 min from the centroid. A spatial join is performed to identify which service reports fall within this area. 
+In this section, a subsample of the service request are obtained by filtering out the requests that are not within 1 min of the Bellville South official suburb. This is done by using a shape file containing the offical suburbs of the City of Cape Town. The Bellville South polygon is used to obtain its centroid, following which the Open Street Maps API is used to obtain a polygon that represents the area which is 1 min from the centroid. A spatial join is performed to identify which service reports fall within this area. 
 
 The code chunk below loads the necessary data. `load_cpt_suburbs` is a custom function sourced at the start of the document. It checks whether the shape file is available locally, downloads it if it isn't and returns the shape file loaded into R as an `sf` object. 
 
@@ -547,7 +543,7 @@ belville_centroid <- bellville_shp %>%
 toc()
 ```
 
-The code chunk below obtains the area reachable within 1 min from the centroid. It also visualises the process in a plot that show the Bellville South outline, its centroid, and the 1 min reachable area from the centroid. 
+The code chunk below obtains the area reachable within 1 min from the centroid using the `osrmIsochrone` function. It also visualises the process in a plot that show the Bellville South outline, its centroid, and the 1 min reachable area from the centroid. 
 
 ```{r}
 # Determine the area which is reachable within 1 min or less from the centroid
@@ -577,7 +573,11 @@ cpt_offcial_suburb_shp %>%
   tm_title("Bellville South outline, centroid (red), and area within 1min travel (blue)")
 ```
 
-The code chunk below transforms the lat long values from the service report data into point geometries. The 1 min reachable area is then used to filter out the point geometries which do not fall within its bounds. The code can be implemented in parallel which would reduce the execution time. Again, the machine I am working on has only 8GB of RAM. It causes the process to spill into swap which makes the parallel code run slower on my machine. However, on a machine with more resources, the relevant lines can be commented out and uncommented respectively to allow for parallel implementation which will reduce execution time. `sr_bellville_centroid_1m` contains the resulting data. 
+The code chunk below transforms the lat long values from the service report data into point geometries. The 1 min reachable area is then used to filter out the point geometries which do not fall within its bounds. This process is visualised in the code chunk after the next. 
+
+> The code can be implemented in parallel which would reduce the execution time. Again, the machine I am working on has only 8GB of RAM. It causes the process to spill into swap which makes the parallel code run slower on my machine. However, on a machine with more resources, the relevant lines can be commented out and uncommented respectively to allow for parallel implementation which will reduce execution time. 
+
+`sr_bellville_centroid_1m` contains the resulting data. 
 
 ```{r}
 # Use the long & lat values from sr & filter out all points outside the 1m area
@@ -631,11 +631,14 @@ sr_bellville_centroid_1m <- sr_geom_df %>%
   st_as_sf()
 # stopCluster(cl)  # for parallel
 toc()
+
+sr_bellville_centroid_1m %>% 
+  glimpse()
 ```
 
 The code and plots below, illustrate the steps in the process visually.
 
-```{r}
+```{r,}
 # create a dataframe with data from all polygons that have points from Bellville
 # South to be used in the aiding visualisation
 adjacent_burbs <- sr_bellville_centroid_1m %>% 
@@ -667,6 +670,325 @@ tmap_arrange(pre_filter_map, post_filter_map, ncol = 2)
 
 ### Wind data augmentation
 
+This section downloads & cleans the wind speed and direction data, and joins it to the service reports within the 1 min area from Bellville South's centroid.
+
+The code chunk below downloads the wind data & saves it locally using the custom defined `download_file` function sourced at the start of the document. The function checks whether the file exists locally and skips the download request if it does. 
+
+```{r}
+# the link to where the wind data can be downloaded
+wind_req_link <- "https://www.capetown.gov.za/_layouts/OpenDataPortalHandler/DownloadHandler.ashx?DocumentName=Wind_direction_and_speed_2020.ods&DatasetDocument=https%3A%2F%2Fcityapps.capetown.gov.za%2Fsites%2Fopendatacatalog%2FDocuments%2FWind%2FWind_direction_and_speed_2020.ods"
+wind_file_path <- "data/wind_direction_and_speed_2020.ods"
+# download_file is a custom function that downloads a file sourced at the top 
+# of the script. Below it is used to download the wind data from the link above
+tic("Time taken to download/check wind data file")
+download_file(
+  location = wind_req_link,
+  local_path = wind_file_path
+)
+toc()
+```
+
+The code chunk below downloads and cleans the wind data. Cleaning steps involve:
+
+  * Skipping the redundant first rows in the file
+  * Cleaning the column names
+  * Retaining only the relevant columns
+  * Converting the data from a character to date-time
+  * Converting the wind speed and direction from characters to doubles
+  * Removing the irrelevant rows
+
+```{r}
+# loading and cleaning the wind data file
+bellville_wind_df <-
+  read_ods(wind_file_path, skip = 2) %>% 
+  # clean the names of the columns
+  clean_names() %>% 
+  select(
+    date_time,
+    # select only the columns for belville
+    contains("bellville")
+  ) %>% 
+  # give the columns appropriate names
+  set_names(c("date_time", "wind_dir_deg", "wind_speed_m_sec")) %>% 
+  mutate(
+    date_time = dmy_hms(glue("{date_time}:00")),
+    wind_dir_deg = as.double(wind_dir_deg),
+    wind_speed_m_sec = as.double(wind_speed_m_sec)
+  ) %>% 
+  # The rows where date_time is missing are not applicable (they contained 
+  # unnecessary or no information)
+  filter(!is.na(date_time)) 
+
+# display the cleaned data
+bellville_wind_df %>% 
+  glimpse()
+```
+
+The code chunk below joins the wind data to the service reports in the 1 min area by the time variables. It is necessary to ensure the frequency of the timestamps align before the join. To this end, an hourly creation time variable is added to the service report data before joining. 
+
+```{r}
+# Join the air quality to the SRs one min from Bellville South centroid 
+sr_bellville_wind <- sr_bellville_centroid_1m %>%
+  # the weather data is captured at an hourly frequency, create an hourly column
+  # that can be used to perform the join
+  mutate(
+    creation_hour = floor_date(creation_timestamp, unit = "hours"),
+    .before = 3
+  ) %>% 
+  # the frequencies align, we join on them below
+  left_join(bellville_wind_df, by = join_by("creation_hour" == "date_time")) 
+
+# displayed the joined data
+sr_bellville_wind %>% 
+  glimpse()
+```
+
 ### Data anonymisation
 
-There is an inherent trade off in securing data. Data that is completely useful is also completely insecure while data that is completely secure is completely useless. As an example, the most secure way to avoid data being used for something unwanted, might be to destroy all instances of the data, but that also means that nothing else can be done with the data. To balance usefulness and security, we want to get rid of the portions of the data that allow the end-user to be identified whilst maintaining as much useful information in the process. The `notification_number` is useful as the unique identifier (it might be useful if we need to link back to original data). To make it more secure, we use a hashing algorithm to pseudonymise it. I also added a prefix and suffix, and squared the number to make it more difficult to look it up via hash tables. As requested, the `creation_timestamp` is converted to 6-hour frequency (`creation_timestamp_6h`) and the location to 500m frequency (captured in the `geometry` column). The `completion_timestamp` is useful for determining the duration of the service issues, I calculate the duration of the issue in hours, keep the duration (`duration_to_completion_hours`) and drop the `completion_timestamp`. The wind direction and speed can be reverse engineered to determine the `creation_timestamp` to an hourly frequency, which defeats the purpose of the 6-hour frequency transformation. I therefore convert the wind data to hourly frequency and calculate the average direction (`wind_dir_deg`) and speed (`wind_speed_m_sec`) of the wind for each 6-hour interval before joining it to the service report data. I leave out the `reference_number` because it is not useful for analysis. I thought about iterating over the category variables (`directorate`, `department`, `branch`, `section`, `code_group`, `code`, `cause_code`) and change the value to `“Other”` in instances where there was only one occurrence of a value in the category but this felt like overkill. 
+There is an inherent trade off in securing data. Data that are completely useful are also completely insecure while data that are completely secure are completely useless. As an example, the most secure way to avoid data being used for something unwanted, might be to destroy all instances of the data, but that also means that nothing else can be done with the data. To balance usefulness and security, we want to get rid of the portions of the data that allow the end-user to be identified whilst maintaining as much useful information in the process. The `notification_number` is useful as the unique identifier (it might be useful if we need to link back to original data). To make it more secure, we use a hashing algorithm to pseudonymise it. I also added a prefix and suffix, and squared the number before hashing to make it more difficult to look it up via hash tables. As requested, the `creation_timestamp` is converted to 6-hour frequency (`creation_timestamp_6h`) and the location to 500m frequency (captured in the `geometry` column). The `completion_timestamp` is useful for determining the duration of the service issues, I calculate the duration of the issue in hours, keep the duration (`duration_to_completion_hours`) and drop the `completion_timestamp`. This is necessary because the completion timestamp is useful through its relationship with the `creation_timestamp` which will be ommited from the anonymised data. The wind direction and speed can be reverse engineered to determine the `creation_timestamp` to an hourly frequency, which defeats the purpose of the 6-hour frequency transformation. I therefore convert the wind data to 6-hourly frequency and calculate the average direction (`wind_dir_deg`) and speed (`wind_speed_m_sec`) of the wind for each 6-hour interval before joining it to the service report data. I leave out the `reference_number` because it is not useful for analysis. I thought about iterating over the category variables (`directorate`, `department`, `branch`, `section`, `code_group`, `code`, `cause_code`) and change the value to `“Other”` in instances where there was only one occurrence of a value in the category but this felt like overkill.
+
+```{r}
+anonymised_bellville_data <- sr_bellville_wind %>% 
+  select(
+   notification_number,
+   reference_number,
+   creation_timestamp,
+   completion_timestamp,
+   directorate,
+   department,
+   branch,
+   section,
+   code_group,
+   code,
+   cause_code,
+   official_suburb,
+   h3_level8_index
+  ) %>% 
+  mutate(
+    # calculate the duration from creation to completion
+    duration_to_completion_hours = completion_timestamp - creation_timestamp,
+    # extract the seconds and convert to hours
+    duration_to_completion_hours = (as.numeric(duration_to_completion_hours) / 60) / 60,
+    # there are some slight negative values, round to nearest hour to solve
+    duration_to_completion_hours = round(duration_to_completion_hours),
+    # Use sha256 and add salt to avoid the values being looked up easily 
+    hash_id = map_chr(notification_number, ~digest(str_c("_*", as.numeric(.x)^2, "*_"), algo = "sha256")),
+    # select a smaller subset of characters (8) for the id
+    hash_id = str_sub(hash_id, 1, 8),
+    creation_timestamp_6h = floor_date(creation_timestamp, "6H")
+  ) %>% 
+  # Transform location accuracy to ~500m (could have used hex polygons at level
+  # 8 but this methods get exactly 500m approximations)
+  # transform the projection to EPSG:32734 to ease working with meters
+  # see https://epsg.io/32734 for more information
+  st_transform(32734) %>% 
+  # generalise to a 500m grid
+  st_snap_to_grid(500) %>% 
+  # transform back to standard CRS EPSG:4326
+  st_transform(4326) %>% 
+  # join in the wind data after aggregating it to 6 hour temporal accuracy
+  left_join(
+    # transform the wind data
+    bellville_wind_df %>% 
+      # aggregate the wind data to 6 hour temporal accuracy
+      mutate(date_time = floor_date(date_time, unit = "6H")) %>% 
+      group_by(date_time) %>% 
+      summarise(
+        across(where(is.double), ~mean(.x, na.rm = T))
+      ) %>% 
+      # convert the NaNs to NAs, this is more accurate and avoids unexpected
+      # behaviour, especially if someone else is going to be working with the 
+      # data who might be unaware of their presence. 
+      mutate(
+        wind_dir_deg = ifelse(is.nan(wind_dir_deg), NA_real_, wind_dir_deg)
+      ),
+    by = join_by(creation_timestamp_6h == date_time)
+  ) %>% 
+    select(
+      hash_id,
+      creation_timestamp_6h,
+      duration_to_completion_hours,
+      official_suburb,
+      directorate,
+      department,
+      branch,
+      section,
+      code_group,
+      code,
+      cause_code,
+      # and from the wind data
+      wind_speed_m_sec,
+      wind_dir_deg
+    )
+
+# display the resulting data
+anonymised_bellville_data %>% 
+  glimpse()
+```
+
+Once the data have been anonymised, we can still obtain valuable insights from the data as demonstrated in the plot below. 
+
+```{r}
+# Visualise the data
+anonymised_bellville_data %>% 
+  mutate(
+    directorate = gsub("COMMUNITY SERVICES AND HEALTH", "COMM SERV & HEALTH", directorate),
+    directorate = gsub("MANAGEMENT", "MAN", directorate)
+  ) %>% 
+  ggplot(
+    aes(x = directorate, col = directorate, y = duration_to_completion_hours)
+  ) +
+  geom_jitter(alpha = 0.3) +
+  geom_boxplot(alpha = 0.6) +
+  coord_flip() +
+  scale_y_continuous(trans = "log") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(
+    title = "Hours taken to complete service requests per directorate",
+    x = "",
+    y = ""
+  )
+
+```
+
+# Appendix (helper functions) {#sec-appendix}
+
+## `download_cpt_s3_data`
+
+```{r}
+# define a function for retrieving a file using its link
+download_cpt_s3_data <- function(file_location){
+  
+  # get the file name
+  file_name <- basename(file_location)
+  # define a local path to save the file to (or which it has been saved to)
+  local_path <- glue::glue("data/{file_name}")
+  
+  # check if the file already exists
+  if(file_name %in% list.files("data")){
+    log_info("The file already exists")
+    return(local_path)
+  }
+  
+  log_info("The file does not exist and is being downloaded...")
+  
+  # create http request object
+  resp <- request(file_location) %>% 
+  # perform the request and save the result to the local path
+    req_perform(path = local_path)
+  
+  # unzip the file if it was zipped
+  if(grepl("\\.gz$", file_name)){
+    local_path = gsub("\\.gz$", "", local_path)
+    system(glue("gunzip -k data/{file_name}"))
+  }
+  
+  return(local_path)
+  
+}
+```
+
+## `load_cpt_suburbs`
+
+```{r}
+#this function downloads the CPT Official Suburbs shape file if it does not 
+# exist, loads it in and returns it as the output of the function
+load_cpt_suburbs <- function(){
+  
+  # check if the zip file has already been retrieved
+  if("Official_Planning_Suburbs.zip" %in% list.files("data/")){
+    
+    log_info("The file already exists, no need to download")
+    
+    # if it has been retrieved, check that it has been extracted
+    if(length(list.files("data/Official_Planning_Suburbs/")) < 6){
+      
+      log_info("The directory is being extracted")
+      
+      system("unzip data/Official_Planning_Suburbs.zip -d data/Official_Planning_Suburbs")
+      
+    }
+    
+    log_info("Loading shape file")
+    # if it has, read it, and return it as the function output
+    cpt_suburb_shp <- st_read("data/Official_Planning_Suburbs/Official_Planning_Suburbs.shp")
+    
+    return(cpt_suburb_shp)
+  }
+  
+  log_info("The file does not exist, proceeding to request it from the web")
+  
+  # request the Official Planning Suburbs shape file & save it locally
+  request("https://hub.arcgis.com/api/v3/datasets/8ebcd15badfe40a4ab759682aacf8439_3/downloads/data?format=shp&spatialRefId=3857&where=1%3D1") %>% 
+    req_perform("data/Official_Planning_Suburbs.zip")
+  
+  # unzip the folder & save it in the data directory
+  if(last_response() %>% resp_status() == 200){
+    
+    log_info("The directory is being extracted")
+    system("unzip data/Official_Planning_Suburbs.zip -d data/Official_Planning_Suburbs")
+    
+  }
+  
+  log_info("Loading shape file")
+  # read in the shape file
+  cpt_suburb_shp <- st_read("data/Official_Planning_Suburbs/Official_Planning_Suburbs.shp")
+  
+  return(cpt_suburb_shp)
+  
+}
+```
+
+## `st_join_contains`
+
+```{r}
+# define a function to perform spatial joins using the st_contains algorithm
+# and keeps only the h3 level 8 index and the notification_number (unique ID)
+st_join_contains <- function(points_df, polygons_df){
+  
+  poly_point_join <- st_join(
+    x = polygons_df,
+    y = points_df,
+    join = st_contains
+  ) %>% 
+    st_drop_geometry() %>% 
+    as_tibble() %>% 
+    select(
+      h3_level8_index = index,
+      notification_number
+    ) %>% 
+    # we don't want to keep redundant polygons (ones with no sr info associated)
+    filter(!is.na(notification_number))
+  
+  return(poly_point_join)
+  
+}
+```
+
+## `download_file`
+
+```{r}
+download_file <- function(location, local_location){
+  
+  # check if the file already exists locally
+  if(basename(local_location) %in% list.files(dirname(local_location))){
+    log_info("The file already exists")
+    return(local_path)
+  }
+  
+  # if the file does not exist, download it and return its local location
+  log_info("The file does not exist locally, commencing download...")
+  request(location) %>% 
+    req_perform(path = local_path)
+  
+  # unzip the file if it was zipped
+  if(grepl("\\.gz$", file_name)){
+    local_path = gsub("\\.gz$", "", local_path)
+    system(glue("gunzip -k data/{file_name}"))
+  }
+  
+  return(local_path)
+  
+}
+```
