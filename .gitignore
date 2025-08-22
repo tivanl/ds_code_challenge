@@ -6,6 +6,7 @@ output/*
 
 # But keep the directory itself
 !data/.gitkeep
+!output/.gitkeep
 
 ### R ###
 # History files
