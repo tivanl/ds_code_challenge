@@ -43,6 +43,7 @@ library(readODS)
 library(tidyverse)
 source("scripts/helpers/load_cpt_suburbs.R")
 source("scripts/helpers/download_file.R")
+source("scripts/helpers/download_cpt_s3_data.R")
 
 options(scipen = 999)
 
@@ -54,6 +55,11 @@ sr_hex_df <- read_csv("data/sr_hex.csv") %>%
   # the data without spatial info are not necessary
   filter(!is.na(latitude) & !is.na(longitude))
 
+# ensure the file to validate against is downloaded
+tic("Time taken to download file (or check if already downloaded)")
+hex_polygons_8_location <- "https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/city-hex-polygons-8.geojson" 
+download_cpt_s3_data(hex_polygons_8_location)
+toc()
 # load the polygons
 cpt_polygons_8 <- st_read("data/city-hex-polygons-8.geojson")
 
