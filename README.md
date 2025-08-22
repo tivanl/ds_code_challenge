@@ -195,7 +195,7 @@ map_chr(
 toc()
 ```
 
-    Retrieving resolution 8 data from city_hex_polygons_8_10_filter_8.geojson took: 2.956 sec elapsed
+    Retrieving resolution 8 data from city_hex_polygons_8_10_filter_8.geojson took: 3.099 sec elapsed
 
 The code below validates that the polygons retrieved using S3 Select
 match the data in `city_hex_polygons_8_10_filter_8.geojson`.
@@ -206,7 +206,7 @@ cpt_hex_filtered_8 <- st_read("data/city_hex_polygons_8_10_filter_8.geojson")
 ```
 
     Reading layer `city_hex_polygons_8_10_filter_8' from data source 
-      `/home/tivan/Documents/2025/aansoeke/20250809_jpal_datascientist/ds_code_challenge/data/city_hex_polygons_8_10_filter_8.geojson' 
+      `/home/tivan/Documents/projekte/ds_code_challenge/data/city_hex_polygons_8_10_filter_8.geojson' 
       using driver `GeoJSONSeq'
     Simple feature collection with 3832 features and 4 fields
     Geometry type: POLYGON
@@ -228,7 +228,7 @@ download_cpt_s3_data(hex_polygons_8_location)
 toc()
 ```
 
-    Time taken to download data/city-hex-polygons-8.geojson (or check if already downloaded): 0.004 sec elapsed
+    Time taken to download data/city-hex-polygons-8.geojson (or check if already downloaded): 0.697 sec elapsed
 
 ``` r
 # read the file in against which to validate
@@ -236,7 +236,7 @@ city_polygons_8 <- st_read("data/city-hex-polygons-8.geojson")
 ```
 
     Reading layer `city-hex-polygons-8' from data source 
-      `/home/tivan/Documents/2025/aansoeke/20250809_jpal_datascientist/ds_code_challenge/data/city-hex-polygons-8.geojson' 
+      `/home/tivan/Documents/projekte/ds_code_challenge/data/city-hex-polygons-8.geojson' 
       using driver `GeoJSON'
     Simple feature collection with 3832 features and 3 fields
     Geometry type: POLYGON
@@ -278,7 +278,7 @@ if(rows_8_not_in_8to10 == 0 & rows_8to10_not_in_8 == 0){
 toc()
 ```
 
-    Validation of city-hex-polygons-8-10 (res 8) against city-hex-polygons-8: 0.011 sec elapsed
+    Validation of city-hex-polygons-8-10 (res 8) against city-hex-polygons-8: 0.009 sec elapsed
 
 ``` r
 # print the dataframe
@@ -329,19 +329,19 @@ tic("Time taken to retrieve sr_hex")
 download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr_hex.csv.gz")
 ```
 
-    data/sr_hex.csv.gz
+    data/sr_hex.csv
 
 ``` r
 download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr.csv.gz")
 ```
 
-    data/sr.csv.gz
+    data/sr.csv
 
 ``` r
 toc()
 ```
 
-    Time taken to retrieve sr_hex: 0.012 sec elapsed
+    Time taken to retrieve sr_hex: 19.061 sec elapsed
 
 Once the required data is downloaded, we can read it in and prepare it
 for the join. Combining the data will require performing a spatial join.
@@ -408,7 +408,7 @@ city_hex_8 <- st_read("data/city-hex-polygons-8.geojson")
 ```
 
     Reading layer `city-hex-polygons-8' from data source 
-      `/home/tivan/Documents/2025/aansoeke/20250809_jpal_datascientist/ds_code_challenge/data/city-hex-polygons-8.geojson' 
+      `/home/tivan/Documents/projekte/ds_code_challenge/data/city-hex-polygons-8.geojson' 
       using driver `GeoJSON'
     Simple feature collection with 3832 features and 3 fields
     Geometry type: POLYGON
@@ -469,7 +469,7 @@ geo_sr_12m_indexed <- sf_sr_12m %>%
 toc()
 ```
 
-    Time consumed in conversion and spatial join: 23.066 sec elapsed
+    Time consumed in conversion and spatial join: 23.02 sec elapsed
 
 ``` r
 # show that the indexes have been matched
@@ -766,7 +766,7 @@ cpt_polygons_8 <- st_read("data/city-hex-polygons-8.geojson")
 ```
 
     Reading layer `city-hex-polygons-8' from data source 
-      `/home/tivan/Documents/2025/aansoeke/20250809_jpal_datascientist/ds_code_challenge/data/city-hex-polygons-8.geojson' 
+      `/home/tivan/Documents/projekte/ds_code_challenge/data/city-hex-polygons-8.geojson' 
       using driver `GeoJSON'
     Simple feature collection with 3832 features and 3 fields
     Geometry type: POLYGON
@@ -782,7 +782,7 @@ cpt_offcial_suburb_shp <- load_cpt_suburbs()
 ```
 
     Reading layer `Official_Planning_Suburbs' from data source 
-      `/home/tivan/Documents/2025/aansoeke/20250809_jpal_datascientist/ds_code_challenge/data/Official_Planning_Suburbs/Official_Planning_Suburbs.shp' 
+      `/home/tivan/Documents/projekte/ds_code_challenge/data/Official_Planning_Suburbs/Official_Planning_Suburbs.shp' 
       using driver `ESRI Shapefile'
     Simple feature collection with 778 features and 4 fields
     Geometry type: MULTIPOLYGON
@@ -794,7 +794,7 @@ cpt_offcial_suburb_shp <- load_cpt_suburbs()
 toc()
 ```
 
-    Time taken to load the suburb shape file: 0.036 sec elapsed
+    Time taken to load the suburb shape file: 6.927 sec elapsed
 
 The code chunk below obtains the centroid of Bellville South.
 
@@ -811,7 +811,7 @@ belville_centroid <- bellville_shp %>%
 toc()
 ```
 
-    Time taken to derive the centroid of Bellville South: 0.004 sec elapsed
+    Time taken to derive the centroid of Bellville South: 0.005 sec elapsed
 
 The code chunk below obtains the area reachable within 1 min from the
 centroid using the `osrmIsochrone` function. It also visualises the
@@ -833,7 +833,7 @@ centroid_buff_1min <- belville_centroid %>%
 toc()
 ```
 
-    Time taken to determine the 1 min reachable area from the centroid: 16.411 sec elapsed
+    Time taken to determine the 1 min reachable area from the centroid: 16.599 sec elapsed
 
 ``` r
 # visualise the process using the Bellville South shape
@@ -920,7 +920,7 @@ sr_bellville_centroid_1m <- sr_geom_df %>%
 toc()
 ```
 
-    Time taken to filter out all points not 1 min from Bellville South centroid: 18.716 sec elapsed
+    Time taken to filter out all points not 1 min from Bellville South centroid: 18.655 sec elapsed
 
 ``` r
 sr_bellville_centroid_1m %>% 
@@ -1011,7 +1011,7 @@ download_file(
 toc()
 ```
 
-    Time taken to download/check wind data file: 0.002 sec elapsed
+    Time taken to download/check wind data file: 1.588 sec elapsed
 
 The code chunk below downloads and cleans the wind data. Cleaning steps
 involve:
