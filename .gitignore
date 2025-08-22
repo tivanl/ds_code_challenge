@@ -4,6 +4,9 @@ output/*
 *.csv
 *.xlsx
 
+# But keep the directory itself
+!data/.gitkeep
+
 ### R ###
 # History files
 .Rhistory

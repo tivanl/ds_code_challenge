@@ -1,3 +1,32 @@
+# Set the working directory if not working in working within the project
+# setwd("path/to/ds_code_challenge")
+
+# a vector containing the names of all the packages used in the document
+req_pkg <- c(
+  "paws",
+  "httr2",
+  "tictoc",
+  "logger",
+  "glue",
+  "sf",
+  "jsonlite",
+  "tmap",
+  "furrr",
+  "parallel",
+  "janitor",
+  "glue",
+  "h3jsr",
+  "osrm",
+  "readODS",
+  "digest",
+  "lwgeom",
+  "tidyverse"
+)
+# vector indicating whether the packages in req_pkg are installed
+filter_vec <- !req_pkg %in% installed.packages()[,"Package"]
+# install those that have not been installed
+if(sum(filter_vec) > 0) walk(pkg[filter_vec], ~install.packages(.x, Ncpus = 5))
+
 library(paws)
 library(httr2)
 library(tictoc)
