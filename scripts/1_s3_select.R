@@ -35,7 +35,7 @@ library(glue)
 library(sf)
 library(jsonlite)
 library(tidyverse)
-source("scripts/download_cpt_s3_data.R")
+source("scripts/helpers/download_cpt_s3_data.R")
 
 # set up AWS access -------------------------------------------------------
 

@@ -49,6 +49,7 @@ options(scipen = 999)
 # Create Bellville South filtered data ------------------------------------
 
 # load the service request data (indexed) and the polygons vector data
+download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr_hex.csv.gz")
 sr_hex_df <- read_csv("data/sr_hex.csv") %>% 
   # the data without spatial info are not necessary
   filter(!is.na(latitude) & !is.na(longitude))
