@@ -76,6 +76,11 @@ geo_sr_12m <- service_requests_12m %>%
 
 
 # joining the SR data to the polygons -------------------------------------
+# ensure the file to validate against is downloaded
+tic("Time taken to download file (or check if already downloaded)")
+hex_polygons_8_location <- "https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/city-hex-polygons-8.geojson" 
+download_cpt_s3_data(hex_polygons_8_location)
+toc()
 # read in the polygons
 city_hex_8 <- st_read("data/city-hex-polygons-8.geojson")
 
