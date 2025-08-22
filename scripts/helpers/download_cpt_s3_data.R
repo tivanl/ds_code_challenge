@@ -4,7 +4,7 @@ download_cpt_s3_data <- function(file_location){
   # get the file name
   file_name <- basename(file_location)
   # define a local path to save the file to (or which it has been saved to)
-  local_path <- glue("data/{file_name}")
+  local_path <- glue::glue("data/{file_name}")
   
   # check if the file already exists
   if(file_name %in% list.files("data")){

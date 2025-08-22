@@ -17,6 +17,8 @@ source("scripts/helpers/download_file.R")
 
 options(scipen = 999)
 
+# Create Bellville South filtered data ------------------------------------
+
 # load the service request data (indexed) and the polygons vector data
 sr_hex_df <- read_csv("data/sr_hex.csv") %>% 
   # the data without spatial info are not necessary
@@ -25,35 +27,16 @@ sr_hex_df <- read_csv("data/sr_hex.csv") %>%
 # load the polygons
 cpt_polygons_8 <- st_read("data/city-hex-polygons-8.geojson")
 
-# identify the service requests for Bellville South and count the number of
-# requests per polygon to use in the visualisation that follows
-belville_south_sr <- sr_hex_df %>% 
-  filter(official_suburb == "BELLVILLE SOUTH") %>% 
-  rename(index = h3_level8_index) %>% 
-  count(index, name = "sr_belville_south") %>% 
-  left_join(
-    cpt_polygons_8,
-    .
-  ) 
-
-# Visualise the number of service requests for Bellville South per polygon
-belville_south_sr %>% 
-  tm_shape() +
-  tm_polygons() +
-  tm_fill(
-    "sr_belville_south", 
-    breaks = c(0, 50, 100, 500, 800, 1000, 1200, 1500)
-  )
-# from the visualisation, it doesn't seem like the polygons age going to enable
-# the identification of the centroid. We will have to download the shape file
-# to identify the centroid of Bellville South
 
 # download & load the municipal area shape file for cpt using the function 
 # sourced at the top of the script (skips download if locally present)
 tic("Time taken to load the suburb shape file")
-bellville_shp <- load_cpt_suburbs() %>% 
-  filter(OFC_SBRB_N == "BELLVILLE SOUTH")
+cpt_offcial_suburb_shp <- load_cpt_suburbs()
 toc()
+
+# isolate the bellville South polygon
+bellville_shp <- cpt_offcial_suburb_shp %>% 
+  filter(OFC_SBRB_N == "BELLVILLE SOUTH")
 
 # select the polygon for Bellville South and determine the centroid
 tic("Time taken to derive the centroid of Bellville South")
@@ -110,6 +93,8 @@ sr_geom_df <- sr_hex_df %>%
   st_sf(geometry = geom_point_values, crs = 4326) 
 
 sr_bellville_centroid_1m <- sr_geom_df %>% 
+  # create an index to iterate over (reduces memory use for iterative 
+  # implementation or prepares for parallel implementation)
   mutate(
     index = 1:n(),
     index = index %% 10,
@@ -117,51 +102,58 @@ sr_bellville_centroid_1m <- sr_geom_df %>%
   ) %>% 
   group_nest(index) %>% 
   mutate(
-    # geo_filtered = future_map(
+    # geo_filtered = future_map(  #for parallel 
     geo_filtered = map(  # comment out to run in parallel
       data, 
-      ~st_join(.x, centroid_buff_1min, join = st_within) %>% 
+      # join the points to the 1min area using the st_within algorithm
+      ~st_join(.x, centroid_buff_1min, join = st_within) %>%
+        # filter out where id is missing (these are the points outside the 1min
+        # area)
         filter(!is.na(id)) %>% 
+        # drop the columns that come with the 1min area sf object
         select(-c(id, isomin, isomax))
     )
   ) %>% 
+  # keep only the column containing the results from the spatial join & filter
   select(geo_filtered) %>% 
+  # unnest the values from this column into a single dataframe
   unnest(geo_filtered) %>% 
+  # convert it to an sf object
   st_as_sf()
 # stopCluster(cl)  # for parallel
 toc()
 
-sr_bellville_centroid_1m %>% 
-  st_as_sf()
-
+# create a dataframe with data from all polygons that have points from Bellville
+# South to be used in the aiding visualisation
 adjacent_burbs <- sr_bellville_centroid_1m %>% 
   distinct(official_suburb) %>% 
   pull(official_suburb)
 
 # Display the process
-bellville_shp %>% 
+pre_filter_map <- bellville_shp %>% 
   tm_shape() +
   tm_borders() +
   tm_shape(sr_geom_df %>% filter(official_suburb %in% adjacent_burbs)) +
   tm_dots(fill = "green", fill_alpha = 0.3) +
   tm_shape(centroid_buff_1min) +
-  tm_polygons(fill_alpha = 0.7, fill = "blue") + 
-  tm_layout(frame = FALSE) +
-  tm_title("Bellville South outline (black)\nArea within 1min travel (blue)\nLocation of service reports (green)")
+  tm_polygons(fill_alpha = 0.7, fill = "blue")  
+  # tm_title("Bellville South outline (black)\nArea within 1min travel (blue)\nLocation of service reports (green)")
 
 # Display the process
-bellville_shp %>% 
+post_filter_map <- bellville_shp %>% 
   tm_shape() +
   tm_borders() +
   tm_shape(centroid_buff_1min) +
   tm_polygons(fill_alpha = 0.7, fill = "blue") + 
   tm_shape(sr_bellville_centroid_1m) +
-  tm_dots(fill = "yellow", fill_alpha = 0.3) +
-  tm_layout(frame = FALSE) +
-  tm_title("Bellville South outline (black)\nArea within 1min travel (blue)\nLocation of service reports in area (yellow)")
+  tm_dots(fill = "yellow", fill_alpha = 0.3) 
+  # tm_title("Bellville South outline (black)\nArea within 1min travel (blue)\nLocation of service reports in area (yellow)")
+
+tmap_arrange(pre_filter_map, post_filter_map, ncol = 2)
 
 
-# 2. Bring in the wind data
+# 2. Bring in the wind data -----------------------------------------------
+
 # the link to where the wind data can be downloaded
 wind_req_link <- "https://www.capetown.gov.za/_layouts/OpenDataPortalHandler/DownloadHandler.ashx?DocumentName=Wind_direction_and_speed_2020.ods&DatasetDocument=https%3A%2F%2Fcityapps.capetown.gov.za%2Fsites%2Fopendatacatalog%2FDocuments%2FWind%2FWind_direction_and_speed_2020.ods"
 wind_file_path <- "data/wind_direction_and_speed_2020.ods"

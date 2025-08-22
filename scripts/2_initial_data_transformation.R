@@ -7,8 +7,8 @@ library(glue)
 library(furrr)
 library(parallel)
 library(tidyverse)
-source("scripts/download_cpt_s3_data.R")
-source("scripts/st_join_contains.R")
+source("scripts/helpers/download_cpt_s3_data.R")
+source("scripts/helpers/st_join_contains.R")
 
 # retrieve the file if it doesn't exist yet -------------------------------
 
@@ -21,11 +21,11 @@ toc()
 
 
 # load the data and prepare for spatial join ------------------------------
-# result <- read_csv("data/sr_hex.csv") 
 
-# read in the service request data with the H3 hex
+# read in the service request data with the H3 hex indexes for the past 12 
+# months
 service_requests_12m <- read_csv("data/sr.csv") %>% 
-  # exclude the first column, it is a mere row counter
+  # exclude the first column, it is an unnamed row counter
   .[,-1]
 
 # keep the rows with missing lat & long values separate from the geo join data
@@ -38,6 +38,9 @@ missing_geo_sr_12m <- service_requests_12m %>%
 
 # create an object with only non-missing coordinates 
 geo_sr_12m <- service_requests_12m %>% 
+  # select only the notification number as the unique ID
+  select(notification_number, latitude, longitude) %>% 
+  # filter out rows with missing geolocation
   filter(!is.na(latitude) & !is.na(longitude))
 
 
@@ -46,7 +49,7 @@ geo_sr_12m <- service_requests_12m %>%
 city_hex_8 <- st_read("data/city-hex-polygons-8.geojson")
 
 tic("Time consumed in conversion and spatial join")
-# convert the lat & long points into a geometry to make a sf object of the data
+# convert the lat & long points into point geometries
 geom_point_values <- map2(
   geo_sr_12m$longitude,
   geo_sr_12m$latitude,
@@ -54,8 +57,6 @@ geom_point_values <- map2(
 )
 
 sf_sr_12m <- geo_sr_12m %>% 
-  # select only the notification number as the unique ID
-  select(notification_number) %>% 
   # it is important to check the CRS of the hex to ensure they match
   st_sf(geometry = geom_point_values, crs = 4326)
 
@@ -121,8 +122,29 @@ if(nrow(failed_records)/nrow(geo_sr_12m) > 0.001){
   )
 }
 
-# combine records without coordinates and those with matched
-complete_indexed <- bind_rows(geo_sr_12m_indexed, missing_geo_sr_12m)
+# use the sf dataframe for the 12 month service reports to convert the lat long
+# coordinates from the rows that failed to join to H3 res 8 index values
+outside_cpt_h3 <- sf_sr_12m %>%
+  # keep only the rows which were unable to join to the provided polygons
+  filter(notification_number %in% failed_records$notification_number) %>%
+  # use the point_to_cell function to obtain the h3 res 8 index value for each
+  # point
+  mutate(
+    h3_level8_index = map_chr(geometry, ~point_to_cell(.x, res = 8))
+  ) %>% 
+  # keep only the notification_number and h3 index variables
+  st_drop_geometry() %>% 
+  select(
+    notification_number, h3_level8_index
+  )
+
+# combine records without coordinates, those which were matched, and those which
+# were derived
+complete_indexed <- bind_rows(
+  geo_sr_12m_indexed, 
+  missing_geo_sr_12m,
+  outside_cpt_h3
+) 
 
 all_indexed <- service_requests_12m %>% 
   left_join(complete_indexed)
@@ -134,10 +156,10 @@ measure_file <- read_csv("data/sr_hex.csv")
 # display a snippet of the data
 measure_file
 
-# only the three records that could not be spatially joined, do not match 
-# (their indexes differ from the validation data)
+# The zero rows in the dataframe resulting from the anti_join by all variables 
+# indicates a perfect match
 all_indexed %>% 
   anti_join(measure_file)
 
-all_indexed %>% 
-  write_delim("output/service_reports_h3_level8_indexed.csv", delim = "|")
+
+

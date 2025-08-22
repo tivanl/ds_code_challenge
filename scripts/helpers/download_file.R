@@ -1,7 +1,7 @@
 download_file <- function(location, local_path){
   
   # check if the file already exists locally
-  if(basename(local_path) %in% list.files(dirname(local_path)){
+  if(basename(local_path) %in% list.files(dirname(local_path))){
     log_info("The file already exists")
     return(local_path)
   }

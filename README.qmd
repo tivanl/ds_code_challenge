@@ -33,7 +33,9 @@ code-block-bg: true
 
 # Introduction {#sec-intro}
 
-The purpose of this document is to walk through the my solutions to the [Code Challenge](https://github.com/cityofcapetown/ds_code_challenge/tree/j-pal-data-engineer) for the Data Engineer position at J-PAL Africa. The solutions are divided into three sections, each with a corresponding script. @sec-extraction corresponds to `1_s3_select.R` which retrieves data from AWS, @sec-initial corresponds to `2_initial_data_transformation.R` which combines uses spatial joins to combine two datasets, and @sec-further corresponds to `3_further_data_transformation.R` which applies spatial filtering, adds additional data to enrich the dataset, and retrieves additional data where necessary. 
+The purpose of this document is to walk through the my solutions to the [Code Challenge](https://github.com/cityofcapetown/ds_code_challenge/tree/j-pal-data-engineer) for the Data Engineer position at J-PAL Africa. The solutions are divided into three sections, each with a corresponding script. @sec-extraction corresponds to `1_s3_select.R` which retrieves data from AWS, @sec-initial corresponds to `2_initial_data_transformation.R` which combines uses spatial joins to combine two datasets, and @sec-further corresponds to `3_further_data_transformation.R` which applies spatial filtering, adds additional data to enrich the dataset, and retrieves additional data where necessary. All scripts should be able to run independently from one another (except that where a file was downloaded in one, it will be available to the next which will skip retrieval if the file is detected).
+
+> It is recommended to use the `setwd()` function to the directory that was cloned from Github (`ds_code_challenge`) at the start of every script __or__ to open RStudio by double clicking on the `.Rproj` file. 
 
 # Challenge Solutions
 
@@ -53,8 +55,12 @@ pkg <- c(
   "furrr",
   "parallel",
   "janitor",
+  "glue",
+  "h3jsr",
   "osrm",
   "readODS",
+  "digest",
+  "lwgeom",
   "tidyverse"
 )
 # vector indicating whether the packages in pkg are installed
@@ -74,8 +80,11 @@ library(furrr)
 library(parallel)
 library(janitor)
 library(glue)
+library(h3jsr)
 library(osrm)
 library(readODS)
+library(digest)
+library(lwgeom)
 library(tidyverse)
 ```
 
@@ -85,6 +94,7 @@ Besides the packages read in above, I also define custom function which can be f
 source("scripts/helpers/download_cpt_s3_data.R")
 source("scripts/helpers/st_join_contains.R")
 source("scripts/helpers/load_cpt_suburbs.R")
+source("scripts/helpers/download_file.R")
 ```
 
 
@@ -181,12 +191,13 @@ toc()
 The code below validates that the polygons retrieved using S3 Select match the data in `city_hex_polygons_8_10_filter_8.geojson`. 
 
 ```{r}
-# read selected data in
+# read S3 selected data in from where it was saved in the previous code chunk
 cpt_hex_filtered_8 <- st_read("data/city_hex_polygons_8_10_filter_8.geojson")
 
 # ensure the file to validate against is downloaded
 tic("Time taken to download file (or check if already downloaded)")
 hex_polygons_8_location <- "https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/city-hex-polygons-8.geojson" 
+#  the download_cpt_s3_data function is sourced at the start of the document 
 download_cpt_s3_data(hex_polygons_8_location)
 toc()
 
@@ -199,7 +210,6 @@ tic("Validation of city-hex-polygons-8-10 (res 8) against city-hex-polygons-8")
 # get the number of rows in the larger file that are not contained in the smaller
 # file
 rows_8to10_not_in_8 <- cpt_hex_filtered_8 %>% 
-  filter(resolution == 8) %>% 
   filter(!index %in% city_polygons_8$index) %>% 
   nrow()
 
@@ -209,6 +219,7 @@ rows_8_not_in_8to10 <- city_polygons_8 %>%
   filter(!index %in% cpt_hex_filtered_8$index) %>% 
   nrow()
 
+# An exact match requires both values to be zero
 if(rows_8_not_in_8to10 == 0 & rows_8to10_not_in_8 == 0){
   log_info(
     "Exact match between city-hex-polygons-8 & city-hex-polygons-8-10 (res 8)"
@@ -224,6 +235,9 @@ if(rows_8_not_in_8to10 == 0 & rows_8to10_not_in_8 == 0){
 
 # report the time consumed by the operation
 toc()
+
+# print the dataframe
+cpt_hex_filtered_8
 ```
 
 ## Initial Data Transformation {#sec-initial}
@@ -237,11 +251,421 @@ tic("Time taken to retrieve sr_hex")
 download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr_hex.csv.gz")
 download_cpt_s3_data("https://cct-ds-code-challenge-input-data.s3.af-south-1.amazonaws.com/sr.csv.gz")
 toc()
+```
 
+Once the required data is downloaded, we can read it in and prepare it for the join. Combining the data will require performing a spatial join. The code chunk below splits the data into two data frames. `missing_geo_sr_12m`, contains the unique identifier (`notification_number`) and a column called `h3_level8_index` with all of its values set to zero (as instructed). `notification_number` is used later on to join the indexed data back to `service_requests_12m`. `geo_sr_12m` contains all of the rows that have sufficient geolocation information. 
+
+```{r}
+# read in the service request data with the H3 hex indexes for the past 12 
+# months
+service_requests_12m <- read_csv("data/sr.csv") %>% 
+  # exclude the first column, it is an unnamed row counter
+  .[,-1]
+
+# keep the rows with missing lat & long values separate from the geo join data
+missing_geo_sr_12m <- service_requests_12m %>% 
+  filter(is.na(latitude) & is.na(longitude)) %>% 
+  # we only need to keep the notification_number as the unique ID
+  select(notification_number) %>% 
+  # set the index to zero as instructed
+  mutate(h3_level8_index = "0")
+
+# create an object with only non-missing coordinates 
+geo_sr_12m <- service_requests_12m %>% 
+  # select only the notification number as the unique ID
+  select(notification_number, latitude, longitude) %>% 
+  # filter out rows with missing geolocation
+  filter(!is.na(latitude) & !is.na(longitude))
+
+```
+
+The code chunk below, transforms `geo_sr_12m` to a simple feature collection and them performs a spatial join to retrieve the indexes of the H3 polygons at resolution 8. `goe_sr_12m` has `r nrow(geo_sr_12m)`. I am working on a machine that has only 8GB of RAM, which means I have to opt for memory efficiency rather than speed. It is possible to implement the join in parallel which should reduce the computation time (on my machine it actually takes longer). You can uncomment the relevant lines and comment out the relevent ones to run the process in parallel. 
+
+```{r}
+# read in the polygons
+city_hex_8 <- st_read("data/city-hex-polygons-8.geojson")
+
+tic("Time consumed in conversion and spatial join")
+# convert the lat & long points into point geometries
+geom_point_values <- map2(
+  geo_sr_12m$longitude,
+  geo_sr_12m$latitude,
+  ~st_point(c(.x, .y))
+)
+
+sf_sr_12m <- geo_sr_12m %>% 
+  # it is important to check the CRS of the hex to ensure they match
+  st_sf(geometry = geom_point_values, crs = 4326)
+
+# iterating over 10 smaller dataframes is more memory efficient than performing 
+# the join over the entire points dataframe. On my machine it is also faster due 
+# to the computation spilling into swap memory.
+# It is also faster than implementing it in parallel (but only because I am 
+# limited to 8GB of memory). I implemented a parallel version over 5 instances
+# but the excessive memory usage made it perform slower than the sequential 
+# version.
+
+# cl <- makePSOCKcluster(5)  # for parallel
+# plan(cluster, workers = cl)  # for parallel
+
+# perform a spatial join
+geo_sr_12m_indexed <- sf_sr_12m %>% 
+  # create an index to loop over
+  mutate(
+    row_num = 1:n(),
+    row_num = row_num %% 10
+  ) %>% 
+  # split the dataframe into segments according to the index
+  group_nest(row_num, .key = "points_df") %>% 
+  # Add the polygons as a column in the dataframe (assists with using pmap). 
+  # This will not be memory intensive, all elements of the list will merely
+  # be pointers to the same dataframe containing the polygons
+  mutate(
+    polygons_df = list(city_hex_8)
+  ) %>% 
+  # now that the data segments have been create, drop the index
+  select(-row_num) %>% 
+  # iterate over the segments and bind the rows of the resulting sf dataframes.
+  # Note that the st_join_contains function is defined in a separate file & 
+  # sourced at the start of the document
+  pmap_dfr(st_join_contains)  # comment out for parallel
+  # future_pmap_dfr(st_join_contains)  # for parallel
+
+# stopCluster(cl)  # for parallel
+
+# display the time taken for the operation
+toc()
+
+```
+
+The code chunk below checks the joined records against the original data to see if there were records that failed to join.
+
+```{r}
+
+# show that the indexes have been matched
+geo_sr_12m_indexed
+
+# There are 3 data points that don't comply with the geo join, what should the threshold be? 
+failed_records <- geo_sr_12m %>% 
+  filter(!notification_number %in% geo_sr_12m_indexed$notification_number)
+
+# show the records that failed to match
+failed_records 
+
+# save a file to check which records couldn't match
+saveRDS(failed_records, "output/failed_geo_join_records.rds")
+```
+
+I decided on a threshold of 0.1%. This means that if 0.1% of records with geolocation failed to join, the script errors out. I don't want the script to error due to minor data quality issues (there are already over 200,000 rows without geolocation). I do want to make the user aware of any possible systematic issues in the location values. I view 0.1% as a low threshold for detecting systematic issues. 
+
+```{r}
+# If more than 0.1% of rows failed to join, throw an error and explain where the 
+# failed records can be found.
+# The 0.1% threshold was chosen to ensure a low threshold for detecting 
+# systematic issues (not mere anomalies)
+if(nrow(failed_records)/nrow(geo_sr_12m) > 0.001){
+  log_error(
+    glue(
+      "THERE WERE {nrow(failed_records)} RECORDS THAT COULD NOT BE JOINED BASED ON COORDINATES
+      ____THE 20 RECORD THRESHOLD HAS BEEN VIOLATED____
+      FIND THE RECORDS THAT FAILED IN output/failed_geo_join_records.rds"
+    )
+  )
+} else {
+  # otherwise, let the user know how many records were not joined
+  log_info(
+    glue(
+      "THERE WERE {nrow(failed_records)} RECORDS THAT COULD NOT BE JOINED BASED ON COORDINATES."
+    )
+  )
+}
+```
+
+The map below shows that the three points that failed to join fall slightly outside the bounds of the polygons for the city.
+
+```{r}
+  tm_shape(city_hex_8) +
+  tm_fill() +
+  tm_shape(
+    sf_sr_12m %>%
+      filter(notification_number %in% failed_records$notification_number)
+  ) +
+  tm_dots() 
+```
+
+We can nonetheless obtain H3 resolution 8 index values for these three point by using the `hrjsr` package. This package is a lightweight wrapper that allows for interaction with the H3 API via its JavaScript implementation.  
+
+```{r}
+# use the sf dataframe for the 12 month service reports
+outside_cpt_h3 <- sf_sr_12m %>%
+  # keep only the rows which were unable to join to the provided polygons
+  filter(notification_number %in% failed_records$notification_number) %>%
+  # use the point_to_cell function to obtain the h3 res 8 index value for each
+  # point
+  mutate(
+    h3_level8_index = map_chr(geometry, ~point_to_cell(.x, res = 8))
+  ) %>% 
+  # keep only the notification_number and h3 index variables
+  st_drop_geometry() %>% 
+  select(
+    notification_number, h3_level8_index
+  )
+  
+```
+
+After a successful join and obtaining values for the points outside of the original city polygon bounds, we can combine everything into a single index lookup dataframe. The index values are added to the original 12 month service request data to enable validation.
+
+```{r}
+# combine records without coordinates and those with matched
+complete_indexed <- bind_rows(
+  geo_sr_12m_indexed, 
+  missing_geo_sr_12m, 
+  outside_cpt_h3
+) 
+
+# join to the original service request data
+all_indexed <- service_requests_12m %>% 
+  left_join(complete_indexed)
+# display a snippet of the data
+all_indexed
+```
+
+The final step in this section is validation. The chunk below compares the joined indexes data with the `sr_hex.csv` file that was provided. An `anti_join` across all variables, indicates a perfect match by returning an empty dataframe. 
+
+```{r}
+# check against original file to see if they match
+measure_file <- read_csv("data/sr_hex.csv")
+
+# display a snippet of the data
+measure_file
+
+# only the three records that could not be spatially joined, do not match 
+# (their indexes differ from the validation data)
+all_indexed %>% 
+  anti_join(measure_file)
+```
+
+The resulting data can be used to visualise the spatial distribution of service reports and the most prevalent directorate reported to per area. 
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+#| fig-align: center
+
+tmap_mode("plot")
+
+map_data <- all_indexed %>%
+  count(
+    h3_level8_index, directorate,
+    name = "sr_count"
+  ) %>% 
+  group_by(h3_level8_index) %>% 
+  mutate(
+    total_sr_poly = sum(sr_count)
+  ) %>% 
+  arrange(desc(sr_count)) %>% 
+  filter(1:n() == 1) %>% 
+  group_by(directorate) %>% 
+  mutate(
+    prevalence = n(),
+    directorate = ifelse(prevalence < 40, "Other", directorate),
+    directorate = gsub("AND", "&", directorate),
+    directorate = gsub("MANAGEMENT", "MAN", directorate)
+  ) %>% 
+  # count(h3_level8_index) %>% arrange(-n)
+  left_join(
+    city_hex_8,
+    .,
+    by = join_by(index == h3_level8_index)
+  ) 
+
+
+map_directorate <-
+  map_data %>% 
+  tm_shape() +
+  tm_fill("directorate") +
+  tm_title("Most prevalent directorate") +
+  tm_layout(
+    legend.position = c("right", "top"),
+    legend.text.size = 0.5
+  ) 
+
+map_prevalence <- map_data %>% 
+  tm_shape() +
+  tm_fill(
+    "total_sr_poly",
+    breaks = c(0, 20, 100, 500, 2000, 4000)
+  ) +
+  tm_title("Distribution of service reports") +
+  tm_layout(
+    legend.position = c("right", "top"),
+    legend.text.size = 0.5
+  )
+
+tmap_arrange(map_directorate, map_prevalence, ncol = 2)
 ```
 
 ## Further Data Transformation {#sec-further}
 
+This section deals with geospatial manipulation, joining datasets by temporal variables, and data anonymisation. 
+
+### Bellville subsample
+
+In this section, a subsample of the service request are obtained by filtering out the requests that are not withing 1 min of the Bellville South official suburb. This is done by using a shape file containing the offical suburbs of the City of Cape Town. The Bellville South polygon is used to obtain its centroid, following which the Open Street Maps API is used to obtain a polygon that represents the area which is 1 min from the centroid. A spatial join is performed to identify which service reports fall within this area. 
+
+The code chunk below loads the necessary data. `load_cpt_suburbs` is a custom function sourced at the start of the document. It checks whether the shape file is available locally, downloads it if it isn't and returns the shape file loaded into R as an `sf` object. 
+
+```{r}
+# load the service request data (indexed) and the polygons vector data
+sr_hex_df <- read_csv("data/sr_hex.csv") %>% 
+  # the data without spatial info are not necessary
+  filter(!is.na(latitude) & !is.na(longitude))
+
+# load the polygons
+cpt_polygons_8 <- st_read("data/city-hex-polygons-8.geojson")
+
+# download & load the municipal area shape file for cpt using the function 
+# sourced at the top of the script (skips download if locally present)
+tic("Time taken to load the suburb shape file")
+cpt_offcial_suburb_shp <- load_cpt_suburbs()
+toc()
+
+```
+
+The code chunk below obtains the centroid of Bellville South.
+
+```{r}
+# isolate the bellville South polygon
+bellville_shp <- cpt_offcial_suburb_shp %>% 
+  filter(OFC_SBRB_N == "BELLVILLE SOUTH")
+
+# select the polygon for Bellville South and determine the centroid
+tic("Time taken to derive the centroid of Bellville South")
+belville_centroid <- bellville_shp %>% 
+  .$geometry %>% 
+  st_centroid() 
+toc()
+```
+
+The code chunk below obtains the area reachable within 1 min from the centroid. It also visualises the process in a plot that show the Bellville South outline, its centroid, and the 1 min reachable area from the centroid. 
+
+```{r}
+# Determine the area which is reachable within 1 min or less from the centroid
+tic("Time taken to determine the 1 min reachable area from the centroid")
+centroid_buff_1min <- belville_centroid %>% 
+  # transform to the appropriate coordinate reference system to attain lat-long
+  st_transform(4326) %>% 
+  # extract a vector containing the long and lat values for the centroid
+  st_coordinates() %>% 
+  # use the OSM API to retrieve the area within 1 min from the centroid
+  osrmIsochrone(breaks = 1, res = 30) %>% 
+  # make sure the polygon is valid for further use
+  st_make_valid()
+toc()
+
+
+# visualise the process using the Bellville South shape
+cpt_offcial_suburb_shp %>% 
+  filter(OFC_SBRB_N == "BELLVILLE SOUTH") %>% 
+  tm_shape() +
+  tm_borders() +
+  tm_shape(centroid_buff_1min) +
+  tm_polygons(fill_alpha = 0.7, fill = "blue") + 
+  tm_shape(belville_centroid) +
+  tm_dots(fill = "red") +
+  tm_layout(frame = FALSE) +
+  tm_title("Bellville South outline, centroid (red), and area within 1min travel (blue)")
+```
+
+The code chunk below transforms the lat long values from the service report data into point geometries. The 1 min reachable area is then used to filter out the point geometries which do not fall within its bounds. The code can be implemented in parallel which would reduce the execution time. Again, the machine I am working on has only 8GB of RAM. It causes the process to spill into swap which makes the parallel code run slower on my machine. However, on a machine with more resources, the relevant lines can be commented out and uncommented respectively to allow for parallel implementation which will reduce execution time. `sr_bellville_centroid_1m` contains the resulting data. 
+
+```{r}
+# Use the long & lat values from sr & filter out all points outside the 1m area
+tic("Time taken to filter out all points not 1 min from Bellville South centroid")
+# The machine I'm working on has limited RAM and implementing in parallel makes
+# it spill over into swap memory making the parallel implementation slower than
+# the sequential implementation. If you have more memory available, feel free to
+# uncomment "for parallel" lines and comment out "comment out to run in 
+# parallel" lines
+
+# cl <- makePSOCKcluster(5)  # for parallel
+# plan(cluster, workers = cl)  # for parallel
+# geom_point_values <- future_map2(  # for parallel
+geom_point_values <- map2(  # comment out to run in parallel
+  sr_hex_df$longitude,
+  sr_hex_df$latitude,
+  ~st_point(c(.x, .y))
+)
+
+sr_geom_df <- sr_hex_df %>% 
+  # it is important to check the CRS of the hex to ensure they match
+  st_sf(geometry = geom_point_values, crs = 4326) 
+
+sr_bellville_centroid_1m <- sr_geom_df %>% 
+  # create an index to iterate over (reduces memory use for iterative 
+  # implementation or prepares for parallel implementation)
+  mutate(
+    index = 1:n(),
+    index = index %% 10,
+    .before = 1
+  ) %>% 
+  group_nest(index) %>% 
+  mutate(
+    # geo_filtered = future_map(  #for parallel 
+    geo_filtered = map(  # comment out to run in parallel
+      data, 
+      # join the points to the 1min area using the st_within algorithm
+      ~st_join(.x, centroid_buff_1min, join = st_within) %>%
+        # filter out where id is missing (these are the points outside the 1min
+        # area)
+        filter(!is.na(id)) %>% 
+        # drop the columns that come with the 1min area sf object
+        select(-c(id, isomin, isomax))
+    )
+  ) %>% 
+  # keep only the column containing the results from the spatial join & filter
+  select(geo_filtered) %>% 
+  # unnest the values from this column into a single dataframe
+  unnest(geo_filtered) %>% 
+  # convert it to an sf object
+  st_as_sf()
+# stopCluster(cl)  # for parallel
+toc()
+```
+
+The code and plots below, illustrate the steps in the process visually.
+
+```{r}
+# create a dataframe with data from all polygons that have points from Bellville
+# South to be used in the aiding visualisation
+adjacent_burbs <- sr_bellville_centroid_1m %>% 
+  distinct(official_suburb) %>% 
+  pull(official_suburb)
+
+# Display the process
+pre_filter_map <- bellville_shp %>% 
+  tm_shape() +
+  tm_borders() +
+  tm_shape(sr_geom_df %>% filter(official_suburb %in% adjacent_burbs)) +
+  tm_dots(fill = "green", fill_alpha = 0.3) +
+  tm_shape(centroid_buff_1min) +
+  tm_polygons(fill_alpha = 0.7, fill = "blue")  
+  # tm_title("Bellville South outline (black)\nArea within 1min travel (blue)\nLocation of service reports (green)")
+
+# Display the process
+post_filter_map <- bellville_shp %>% 
+  tm_shape() +
+  tm_borders() +
+  tm_shape(centroid_buff_1min) +
+  tm_polygons(fill_alpha = 0.7, fill = "blue") + 
+  tm_shape(sr_bellville_centroid_1m) +
+  tm_dots(fill = "yellow", fill_alpha = 0.3) 
+  # tm_title("Bellville South outline (black)\nArea within 1min travel (blue)\nLocation of service reports in area (yellow)")
+
+tmap_arrange(pre_filter_map, post_filter_map, ncol = 2)
+```
+
+### Wind data augmentation
 
 ### Data anonymisation
 
